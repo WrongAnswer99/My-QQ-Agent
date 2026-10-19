@@ -23,6 +23,10 @@ public:
     // 根据消息 id 获取消息内容（data.message 部分存入 message），成功返回 true
     bool GetMsg(const std::string& message_id, nlohmann::json& message);
 
+    bool GetGroupList(nlohmann::json& groups, std::string* error = nullptr);
+    bool GetGroupHistory(const std::string& group_id, const std::string& cursor,
+                         nlohmann::json& messages, std::string* error = nullptr);
+
     // 通过 NapCat 文件标识获取文件的 Base64 数据。
     bool GetFileBase64(const std::string& file_id, std::string& base64);
 
@@ -34,7 +38,8 @@ public:
 
 private:
     // 调用任意 OneBot action，body_json 为动作参数，响应 JSON 存入 response
-    bool PostJson(const std::string& action, const std::string& body_json, std::string& response);
+    bool PostJson(const std::string& action, const std::string& body_json, std::string& response,
+                  std::string* error = nullptr);
 
     std::string base_url_;
     std::string token_;

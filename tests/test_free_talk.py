@@ -44,6 +44,7 @@ def run(executable, server_port, *, history_limit=100, private=True, master="88"
             "bot_qq": "99", "master_qq": master, "private_chat_enabled": private,
             "group_free_talk": [7], "group_trigger_keywords": ["触发词"],
             "group_need_at": False,  # 旧字段不得恢复全群自动回复
+            "startup_history_sync_enabled": False,
             "group_history_limit": history_limit, "group_interaction_history_limit": history_limit,
             "image_description_only_enabled": False,
             "ai": {"api_key": "local", "base_url": f"http://127.0.0.1:{server_port}/chat/completions",

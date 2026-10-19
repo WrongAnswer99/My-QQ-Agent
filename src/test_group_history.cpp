@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <string>
 
 #include "group_history.hpp"
@@ -27,18 +28,18 @@ int main() {
 
     {
         // 先用较大的上限写入，再用较小上限加载，验证配置变更后也会裁剪。
-        GroupHistoryStore history(10, 10, true, file_path);
+        GroupHistoryStore history(10, 10, file_path);
         history.RecordIncoming("123", 1, "用户A", "A", {}, true);
         history.RecordBotReply("123", 2, "机器人", "回复A", true);
         history.RecordIncoming("123", 3, "用户B", "B",
-                               {{"image/png", "iVBORw0KGgo="}}, true);
+                               {{"image/png", "iVBORw0KGgo=", "白色测试图片", "123456", 0}}, true);
         history.RecordBotReply("123", 4, "机器人", "回复B", true);
         history.RecordIncoming("123", 5, "用户C", "C",
                                {{"image/jpeg", "/9j/AA=="}}, true);
         history.RecordBotReply("123", 6, "机器人", "回复C", true);
     }
 
-    GroupHistoryStore restored(3, 2, true, file_path);
+    GroupHistoryStore restored(3, 2, file_path);
     std::string error;
     if (!Check(restored.Load(error), "无法重新加载 JSON：" + error)) {
         return 1;
@@ -61,24 +62,67 @@ int main() {
     passed &= Check(snapshot.replies.size() < 2 || snapshot.replies.front().text == "回复B",
                     "回复历史没有丢弃最旧记录");
 
-    GroupHistoryStore images_disabled(3, 2, false, file_path);
-    std::string disabled_error;
-    passed &= Check(images_disabled.Load(disabled_error),
-                    "关闭图片后无法加载 JSON：" + disabled_error);
-    const GroupHistorySnapshot without_images =
-        images_disabled.RecordIncoming("123", 8, "用户E", "E", {}, true);
-    const auto contains_image = [](const std::vector<GroupHistoryEntry>& entries) {
-        for (const GroupHistoryEntry& entry : entries) {
-            if (!entry.images.empty()) {
-                return true;
-            }
-        }
-        return false;
-    };
-    passed &= Check(!contains_image(without_images.messages)
-                        && !contains_image(without_images.mentions)
-                        && !contains_image(without_images.replies),
-                    "关闭图片历史后仍加载了 Base64 数据");
+    passed &= Check(snapshot.mentions.size() == 2
+                        && snapshot.mentions.front().images.size() == 1
+                        && snapshot.mentions.front().images.front().description == "白色测试图片"
+                        && snapshot.mentions.front().images.front().id == "123456"
+                        && snapshot.mentions.front().images.front().text_offset == 0,
+                    "图片描述、编号或位置没有正确恢复");
+
+    // 旧版描述迁移：从同目录缓存恢复原图，没有缓存也保留描述及编号。
+    const std::string legacy_path = "test_history_migration/history.json";
+    std::filesystem::create_directories("test_history_migration/image_cache/123");
+    std::ofstream("test_history_migration/image_cache/123/456.b64") << "iVBORw0KGgo=";
+    const json old_entry = {{"sequence", 1}, {"time", 1}, {"sender", "用户"},
+        {"text", "看看\n【图片 1 的自动描述（仅作历史参考）】\n"
+                 "原图编号：image456，发送标记：[image456]\n旧图片描述\n"
+                 "【图片 2 的自动描述（仅作历史参考）】\n"
+                 "原图编号：image789，发送标记：[image789]\n第二张描述"},
+        {"images", json::array()}};
+    std::ofstream(legacy_path) << json({{"version", 2}, {"groups", {
+        {"123", {{"messages", json::array({old_entry})}}}}}}).dump();
+    {
+        GroupHistoryStore legacy(10, 10, legacy_path);
+        passed &= Check(legacy.Load(error), "旧描述加载失败：" + error);
+        const auto migrated = legacy.RecordIncoming("123", 2, "用户", "新消息", {}, false);
+        passed &= Check(migrated.messages.size() == 1
+                            && migrated.messages[0].text == "看看"
+                            && migrated.messages[0].images.size() == 2
+                            && migrated.messages[0].images[0].base64 == "iVBORw0KGgo="
+                            && migrated.messages[0].images[0].description == "旧图片描述"
+                            && migrated.messages[0].images[0].id == "456"
+                            && migrated.messages[0].images[0].text_offset == std::string("看看").size()
+                            && migrated.messages[0].images[1].description == "第二张描述"
+                            && migrated.messages[0].images[1].base64.empty(),
+                        "旧版描述没有从正文正确迁移为图片数据");
+    }
+    {
+        GroupHistoryStore again(10, 10, legacy_path);
+        passed &= Check(again.Load(error), "迁移后重新加载失败：" + error);
+        const auto snapshot = again.RecordIncoming("123", 3, "用户", "再次加载", {}, false);
+        passed &= Check(snapshot.messages.size() == 2
+                            && snapshot.messages[0].images.size() == 2
+                            && snapshot.messages[0].text == "看看",
+                        "迁移结果重新加载时丢失或重复");
+    }
+    std::filesystem::remove_all("test_history_migration", filesystem_error);
+
+    // 离线补取晚于实时入库，仍按消息时间排序；ID 和边界跨重启保留。
+    {
+        GroupHistoryStore sync(3, 2, file_path);
+        sync.SyncSince("7", 10);
+        sync.RecordIncoming("7", 30, "用户", "实时", {}, false, "30");
+        sync.RecordIncoming("7", 20, "用户", "历史", {}, true, "20");
+        sync.RecordIncoming("7", 10, "用户", "最旧", {}, false, "10");
+        const auto before = sync.RecordIncoming("7", 20, "用户", "历史", {}, true, "20");
+        passed &= Check(before.messages.size() == 3 && before.messages.front().timestamp == 10
+            && before.messages.back().timestamp == 30, "补取排序或消息 ID 去重错误");
+        sync.MarkSynced("7", 20);
+        GroupHistoryStore restart(3, 2, file_path);
+        passed &= Check(restart.Load(error) && restart.Contains("7", "20")
+            && restart.Contains("7", "30") && restart.SyncSince("7", 999) == 20,
+            "重启未保留 ID 或同步进度");
+    }
 
     const std::string prefixed_reply =
         "[2026-09-15 16:57:25] 机器人(QQ:1000000001): 回复正文";

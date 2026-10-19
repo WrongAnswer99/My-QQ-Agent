@@ -40,6 +40,14 @@ int main() {
         Check(load({{"ai", {{"local_varibles", {{"bot_name", "name"}}}}}}), "load variables");
         Check(config.ExpandPromptVariables("[bot_name]") == "name", "loaded substitution");
         Check(config.image_description_only_enabled, "default description mode");
+        Check(config.startup_history_sync_enabled && config.startup_history_initial_hours == 24,
+              "startup sync defaults");
+        Check(load({{"startup_history_sync_enabled", false}, {"startup_history_initial_hours", 48}})
+              && !config.startup_history_sync_enabled && config.startup_history_initial_hours == 48,
+              "startup sync settings");
+        for (const auto invalid : {0, -1, 8761}) {
+            Check(!load({{"startup_history_initial_hours", invalid}}), "invalid initial window");
+        }
         Check(load({{"image_description_only_enabled", false}}), "raw image mode");
         Check(!config.image_description_only_enabled, "inverted flag");
         Check(config.ExpandPromptVariables("[bot_name]") == "[bot_name]", "clear missing variables");

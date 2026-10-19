@@ -55,6 +55,8 @@ def migrate(path):
     before = json.dumps(data, ensure_ascii=False)
     data.pop("group_need_at", None)
     data.setdefault("group_free_talk", [])
+    data.setdefault("startup_history_sync_enabled", True)
+    data.setdefault("startup_history_initial_hours", 24)
     ai = data.setdefault("ai", {})
     ai.setdefault("free_talk_prompt", FREE_TALK_PROMPT)
     variables = ai.setdefault("local_varibles", {})

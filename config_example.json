@@ -7,6 +7,8 @@
     "qq_path": "your_qq_path",
     "private_chat_enabled": true,
     "group_trigger_keywords": [],
+    "startup_history_sync_enabled": true,
+    "startup_history_initial_hours": 24,
     "group_history_limit": 100,
     "group_interaction_history_limit": 30,
     "image_understanding_enabled": true,

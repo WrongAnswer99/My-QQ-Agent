@@ -18,7 +18,9 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* use
 } // namespace
 
 OneBotApi::OneBotApi(const std::string& base_url, const std::string& token)
-    : base_url_(base_url), token_(token) {}
+    : base_url_(base_url), token_(token) {
+    while (!base_url_.empty() && base_url_.back() == '/') base_url_.pop_back();
+}
 
 OneBotApi::~OneBotApi() {}
 
@@ -72,6 +74,31 @@ bool OneBotApi::GetMsg(const std::string& message_id, json& message) {
     } catch (...) {
         return false;
     }
+}
+
+bool OneBotApi::GetGroupList(json& groups, std::string* error) {
+    std::string response;
+    if (!PostJson("get_group_list", "{\"no_cache\":true}", response, error)) return false;
+    try {
+        groups = json::parse(response).at("data");
+        if (groups.is_array()) return true;
+    } catch (...) {}
+    if (error) *error = "get_group_list 响应格式错误：data 应为数组";
+    return false;
+}
+
+bool OneBotApi::GetGroupHistory(const std::string& group_id, const std::string& cursor,
+                               json& messages, std::string* error) {
+    json body = {{"group_id", group_id}, {"count", 20}, {"reverse_order", false}};
+    if (!cursor.empty()) body["message_seq"] = cursor;
+    std::string response;
+    if (!PostJson("get_group_msg_history", body.dump(), response, error)) return false;
+    try {
+        messages = json::parse(response).at("data").at("messages");
+        if (messages.is_array()) return true;
+    } catch (...) {}
+    if (error) *error = "get_group_msg_history 响应格式错误：data.messages 应为数组";
+    return false;
 }
 
 bool OneBotApi::GetFileBase64(const std::string& file_id, std::string& base64) {
@@ -148,9 +175,26 @@ bool OneBotApi::DownloadUrl(const std::string& url, std::string& data) {
     return true;
 }
 
-bool OneBotApi::PostJson(const std::string& action, const std::string& body_json, std::string& response) {
+bool OneBotApi::PostJson(const std::string& action, const std::string& body_json, std::string& response,
+                         std::string* error) {
+    if (error) error->clear();
+    response.clear();
+    const auto fail = [&](std::string reason) {
+        if (!error) return;
+        // 不输出请求、完整响应或 URL；服务端错误中若回显令牌则脱敏。
+        if (!token_.empty()) {
+            std::size_t pos = 0;
+            while ((pos = reason.find(token_, pos)) != std::string::npos) {
+                reason.replace(pos, token_.size(), "[REDACTED]");
+                pos += 10;
+            }
+        }
+        for (char& ch : reason) if (ch == '\r' || ch == '\n') ch = ' ';
+        *error = action + ": " + reason.substr(0, 400);
+    };
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
+        fail("无法初始化 HTTP 客户端");
         return false;
     }
 
@@ -181,10 +225,28 @@ bool OneBotApi::PostJson(const std::string& action, const std::string& body_json
             try {
                 json resp = json::parse(response);
                 ok = (resp.value("status", "") == "ok");
+                if (!ok) {
+                    std::string detail = "OneBot 返回失败";
+                    if (resp.contains("retcode") && resp["retcode"].is_number())
+                        detail += "，retcode=" + resp["retcode"].dump();
+                    for (const char* key : {"message", "wording"}) {
+                        if (resp.contains(key) && resp[key].is_string())
+                            detail += "，" + std::string(key) + "=" + resp[key].get<std::string>();
+                    }
+                    fail(detail);
+                }
             } catch (...) {
-                ok = false;
+                fail("HTTP 200，但响应不是有效的 OneBot JSON 对象");
             }
+        } else {
+            fail("HTTP " + std::to_string(http_code)
+                + (http_code == 401 || http_code == 403 ? "，请检查 NapCat 访问令牌"
+                   : http_code == 404 ? "，请检查正向 HTTP 地址及接口路径" : ""));
         }
+    } else {
+        fail("连接/传输失败，curl=" + std::to_string(static_cast<int>(result))
+            + " (" + curl_easy_strerror(result) + ")"
+            + (result == CURLE_COULDNT_CONNECT ? "，请确认 NapCat 已登录且正向 HTTP 服务已监听" : ""));
     }
 
     curl_slist_free_all(headers);

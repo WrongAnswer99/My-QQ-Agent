@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,6 +13,10 @@
 struct GroupHistoryImage {
     std::string mime_type;
     std::string base64;
+    std::string description;
+    std::string id;
+    // 在原文中的 UTF-8 字节偏移；旧记录没有位置时放在末尾。
+    std::size_t text_offset = std::numeric_limits<std::size_t>::max();
 };
 
 struct GroupHistoryEntry {
@@ -20,6 +25,7 @@ struct GroupHistoryEntry {
     std::string sender;
     std::string text;
     std::vector<GroupHistoryImage> images;
+    std::string message_id;
 };
 
 struct GroupHistorySnapshot {
@@ -32,7 +38,6 @@ struct GroupHistorySnapshot {
 class GroupHistoryStore {
 public:
     GroupHistoryStore(std::size_t message_limit, std::size_t interaction_limit,
-                      bool image_history_enabled,
                       std::string file_path = "userdata/group_history.json");
 
     // 从 JSON 文件恢复历史。文件不存在视为没有历史，不是错误。
@@ -45,7 +50,12 @@ public:
                                         const std::string& sender,
                                         const std::string& text,
                                         const std::vector<GroupHistoryImage>& images,
-                                        bool mentions_bot);
+                                        bool mentions_bot,
+                                        const std::string& message_id = {});
+
+    bool Contains(const std::string& group_id, const std::string& message_id);
+    std::int64_t SyncSince(const std::string& group_id, std::int64_t fallback);
+    void MarkSynced(const std::string& group_id, std::int64_t timestamp);
 
     // 记录机器人已成功发送到群里的回复；reply_to_mention 为 true 时，
     // 同时加入“对 @ 的回复”历史。
@@ -60,6 +70,8 @@ private:
         std::deque<GroupHistoryEntry> messages;
         std::deque<GroupHistoryEntry> mentions;
         std::deque<GroupHistoryEntry> replies;
+        std::int64_t synced_until = 0;
+        std::unordered_map<std::string, std::int64_t> seen;
     };
 
     static void PushAndTrim(std::deque<GroupHistoryEntry>& entries,
@@ -69,7 +81,6 @@ private:
 
     std::size_t message_limit_;
     std::size_t interaction_limit_;
-    bool image_history_enabled_;
     std::string file_path_;
     std::uint64_t next_sequence_ = 1;
     std::mutex mutex_;

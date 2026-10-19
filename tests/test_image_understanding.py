@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
 DATA_URL = "data:image/png;base64," + PNG
+QUOTED_IMAGE = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+QUOTED_URL = "data:image/gif;base64," + QUOTED_IMAGE
 
 
 def segment(kind, **data):
@@ -36,6 +38,7 @@ class Stub(BaseHTTPRequestHandler):
     sent = []
     fail_description = False
     reply_override = None
+    resend_quoted = False
 
     def log_message(self, *_):
         pass
@@ -67,12 +70,18 @@ class Stub(BaseHTTPRequestHandler):
                 self.respond({"error": {"message": "模拟描述失败"}})
             else:
                 content = "测试图片描述：白色背景中有测试文字。" if describing else (self.reply_override or "图片理解测试回复")
+                if not describing and self.resend_quoted:
+                    current = data["messages"][-1]["content"]
+                    text = current[0]["text"] if isinstance(current, list) else current
+                    quoted = text.split("【用户当前消息】")[0]
+                    marker = re.search(r"\[image\d+\]", quoted)
+                    content = marker.group() if marker else "未提供引用图编号"
                 self.respond({"choices": [{"message": {"content": content}}]})
         elif self.path in ("/send_private_msg", "/send_group_msg"):
             self.sent.append(data)
             self.respond({"status": "ok"})
         elif self.path == "/get_msg":
-            self.respond({"status": "ok", "data": {"message": [image()]}})
+            self.respond({"status": "ok", "data": {"message": [image(file=QUOTED_URL)]}})
         elif self.path == "/get_file":
             self.respond({"status": "ok", "data": {"base64": PNG}})
         elif self.path == "/get_image" and data["file"] == "remote-image":
@@ -93,6 +102,7 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
             "napcat_http_base": f"http://127.0.0.1:{server_port}",
             "http_report_port": port, "bot_qq": "99", "master_qq": "88",
             "image_understanding_enabled": enabled, "image_description_only_enabled": not history,
+            "startup_history_sync_enabled": False,
             "group_history_limit": history_limit,
             "group_interaction_history_limit": history_limit,
             "ai": {"api_key": "local-test", "base_url":
@@ -151,7 +161,15 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                     send([at, image()], group=True)
                     assert len(Stub.requests) == start + 1
                     assert image_urls(Stub.requests[-1]) == [DATA_URL]
-                    return 2
+                    Stub.resend_quoted = True
+                    try:
+                        send([at, segment("reply", id="123"),
+                              segment("text", text="把引用的原图发回来")], group=True)
+                        assert image_urls(Stub.requests[-1]) == [QUOTED_URL]
+                        assert Stub.sent[-1]["message"] == [image(file="base64://" + QUOTED_IMAGE)]
+                    finally:
+                        Stub.resend_quoted = False
+                    return 3
 
                 expected_model = vision or "text-test"
                 local_image = root / "sample.png"
@@ -166,6 +184,7 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                     request = Stub.requests[-1]
                     assert request["model"] == expected_model
                     assert image_urls(request) == [DATA_URL], "图片字节或 MIME 不匹配"
+                    assert "请描述并理解所附图片" not in json.dumps(request, ensure_ascii=False)
                     assert request["messages"][0]["content"] == "你是测试机器人 [YYYY-MM-DD HH:MM:SS] [imageX]"
                     assert request["messages"][1]["content"] == "【用户提示词】\n称呼测试机器人 [unknown]"
                 send([text, image(), image()])
@@ -176,7 +195,8 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                 assert "被引用消息" in request["messages"][-1]["content"][0]["text"]
                 before = len(Stub.requests)
                 sent_before = len(Stub.sent)
-                send([image(), image()], group=True)
+                send([segment("text", text="前文"), image(), segment("text", text="中间"),
+                      image(), segment("text", text="末尾")], group=True)
                 assert len(Stub.sent) == sent_before, "未 @ 不应发送群回复"
                 assert len(Stub.requests) == before + (0 if history else 2)
                 if not history:
@@ -187,25 +207,45 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                 if not history:
                     assert not image_urls(Stub.requests[-1]), "后续应只发送历史描述"
                     assert Stub.requests[-1]["model"] == "text-test"
-                    assert "测试图片描述" in json.dumps(Stub.requests[-1], ensure_ascii=False)
+                    context = Stub.requests[-1]["messages"][2]["content"]
+                    assert "测试图片描述" in context
+                    assert context.index("前文") < context.index("图片 1") < context.index("中间")
+                    assert context.index("中间") < context.index("图片 2") < context.index("末尾")
                 else:
                     assert len(image_urls(Stub.requests[-1])) == 2
                 send([at, text, image()], group=True)
                 assert image_urls(Stub.requests[-1])
+                current = json.dumps(Stub.requests[-1]["messages"][-1], ensure_ascii=False)
+                assert "测试图片描述" not in current, "自动描述不得拼入当前用户发言"
+                assert "自动描述" not in current
+                assert "测试图片描述" not in json.dumps(Stub.sent[sent_before:], ensure_ascii=False)
                 saved = json.loads((root / "userdata/group_history.json").read_text(encoding="utf-8"))
-                saved_images = [item["images"] for item in saved["groups"]["7"]["messages"]]
-                assert any(saved_images) == history, "图片历史开关未生效"
+                assert saved["version"] == 4
                 incoming = saved["groups"]["7"]["messages"][0]
+                assert incoming["text"] == "前文中间末尾", "历史原文不能混入描述"
+                assert len(incoming["images"]) == 2
+                assert [item["text_offset"] for item in incoming["images"]] == [6, 12]
+                assert all(item["base64"] == PNG for item in incoming["images"])
                 if not history:
-                    assert "图片 1 的自动描述" in incoming["text"]
-                    assert "图片 2 的自动描述" in incoming["text"]
-                    assert "测试图片描述" in incoming["text"]
-                    assert PNG not in json.dumps(saved), "描述模式不应持久化图片 Base64"
+                    assert all("测试图片描述" in item["description"] for item in incoming["images"])
+                    assert all(re.fullmatch(r"\d+", item["id"]) for item in incoming["images"])
                 else:
-                    assert len(incoming["images"]) == 2
-                    assert "自动描述" not in incoming["text"]
-                send([at, segment("reply", id="123"), text], group=True)
-                assert image_urls(Stub.requests[-1])
+                    assert all(not item["description"] for item in incoming["images"])
+                Stub.resend_quoted = True
+                try:
+                    send([at, segment("reply", id="123"),
+                          segment("text", text="把引用的原图发回来"), image()], group=True)
+                    current = Stub.requests[-1]["messages"][-1]["content"]
+                    urls = [part["image_url"]["url"] for part in current if part["type"] == "image_url"]
+                    assert urls == [QUOTED_URL, DATA_URL], "引用图和当前图顺序或内容错误"
+                    quoted, own = current[0]["text"].split("【用户当前消息】")
+                    quoted_marker = re.findall(r"\[image\d+\]", quoted)
+                    own_marker = re.findall(r"\[image\d+\]", own)
+                    assert len(quoted_marker) == len(own_marker) == 1
+                    assert quoted_marker != own_marker, "两张不同图片不能共用编号"
+                    assert Stub.sent[-1]["message"] == [image(file="base64://" + QUOTED_IMAGE)]
+                finally:
+                    Stub.resend_quoted = False
                 send([text])
                 assert Stub.requests[-1]["model"] == "text-test"
                 assert not image_urls(Stub.requests[-1])
@@ -225,13 +265,14 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                         assert "群聊图片历史记录器" not in Stub.requests[-1]["messages"][0]["content"]
                         saved = json.loads((root / "userdata/group_history.json").read_text(encoding="utf-8"))
                         entry = saved["groups"]["7"]["messages"][-2]
-                        assert "描述生成失败" in entry["text"]
-                        assert "请看图" in entry["text"]
-                        assert not entry["images"]
+                        assert entry["text"] == "[@99]请看图"
+                        assert "描述生成失败" in entry["images"][0]["description"]
+                        assert entry["images"][0]["base64"] == PNG
+                        assert "描述生成失败" not in json.dumps(Stub.requests[-1]["messages"][-1], ensure_ascii=False)
                     finally:
                         Stub.fail_description = False
                 if not history:
-                    markers = re.findall(r"\[image\d+\]", incoming["text"])
+                    markers = ["[image" + item["id"] + "]" for item in incoming["images"]]
                     assert len(markers) == 2 and markers[0] != markers[1]
                     Stub.reply_override = "原图：[@123456789]" + "".join(markers)
                     try:

@@ -53,6 +53,13 @@ bool Config::LoadFromFile(const std::string& path, Config& out_config, std::stri
         out_config.group_history_limit = static_cast<std::size_t>(group_history_limit);
         out_config.group_interaction_history_limit =
             static_cast<std::size_t>(interaction_history_limit);
+        out_config.startup_history_sync_enabled = cfg.value("startup_history_sync_enabled", true);
+        out_config.startup_history_initial_hours = cfg.value("startup_history_initial_hours", 24);
+        if (out_config.startup_history_initial_hours < 1
+            || out_config.startup_history_initial_hours > 8760) {
+            error = "startup_history_initial_hours 必须在 1 到 8760 之间";
+            return false;
+        }
         out_config.image_understanding_enabled = cfg.value("image_understanding_enabled", true);
         out_config.image_description_only_enabled = cfg.value("image_description_only_enabled", true);
 

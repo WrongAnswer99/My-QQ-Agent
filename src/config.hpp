@@ -50,6 +50,8 @@ struct Config {
     std::vector<std::string> group_trigger_keywords; // 群聊触发关键词（未 @ 时含关键词也回复）
     std::size_t group_history_limit = 100;       // 每个群保留的最近消息数
     std::size_t group_interaction_history_limit = 30; // 每个群分别保留的 @ 消息数和对应回复数
+    bool startup_history_sync_enabled = true; // 启动时静默补取离线群消息
+    int startup_history_initial_hours = 24; // 没有同步进度时的回溯小时数
     bool image_understanding_enabled = true;     // 是否理解当前消息和引用消息中的图片
     bool image_description_only_enabled = true; // true 历史仅提供带编号的描述；false 提供图片 Base64
 
