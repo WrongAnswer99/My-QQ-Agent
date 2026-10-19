@@ -10,7 +10,8 @@ namespace ai {
 struct Settings {
     std::string api_key;  // API Key
     std::string base_url; // 完整的 chat/completions 端点地址
-    std::string model;    // 模型名
+    std::string model;    // 文本模型名
+    std::string vision_model; // 请求包含图片时使用；留空则沿用 model
 };
 
 // 初始化 AI 客户端，需在首次调用 Chat 之前调用一次

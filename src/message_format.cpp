@@ -91,11 +91,29 @@ std::string CleanAIReply(const std::string& reply) {
     return reply.substr(separator + 2);
 }
 
-json BuildGroupReplySegments(const std::string& reply) {
+json BuildGroupReplySegments(const std::string& reply, const ImageResolver& resolve_image) {
     json segments = json::array();
     std::size_t text_start = 0;
     std::size_t cursor = 0;
     while (cursor < reply.size()) {
+        if (resolve_image && reply.compare(cursor, 6, "[image") == 0) {
+            std::size_t end = cursor + 6;
+            while (end < reply.size() && reply[end] >= '0' && reply[end] <= '9') {
+                ++end;
+            }
+            if (end > cursor + 6 && end < reply.size() && reply[end] == ']') {
+                PushTextSegment(segments, reply.substr(text_start, cursor - text_start));
+                const std::string file = resolve_image(reply.substr(cursor + 6, end - cursor - 6));
+                if (file.empty()) {
+                    PushTextSegment(segments, "[原图不可用]");
+                } else {
+                    segments.push_back({{"type", "image"}, {"data", {{"file", file}}}});
+                }
+                cursor = end + 1;
+                text_start = cursor;
+                continue;
+            }
+        }
         const bool possible_mention = reply[cursor] == '@'
             || (reply[cursor] == '[' && cursor + 1 < reply.size() && reply[cursor + 1] == '@');
         if (!possible_mention) {

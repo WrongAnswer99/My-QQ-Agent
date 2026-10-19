@@ -21,6 +21,7 @@ add_executable(qq_ai_reply
     src/onebot_api.cpp
     src/ai_client.cpp
     src/group_history.cpp
+    src/image_cache.cpp
     src/message_format.cpp
     src/plugin_catalog.cpp
     src/plugin_runner.cpp
@@ -47,3 +48,7 @@ add_executable(test_group_history
 )
 target_include_directories(test_group_history PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty)
 add_test(NAME group_history COMMAND test_group_history)
+
+add_executable(test_config src/test_config.cpp src/config.cpp src/image_cache.cpp src/message_format.cpp)
+target_include_directories(test_config PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty)
+add_test(NAME config_and_images COMMAND test_config)

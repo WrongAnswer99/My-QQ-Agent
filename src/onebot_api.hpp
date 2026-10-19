@@ -26,6 +26,9 @@ public:
     // 通过 NapCat 文件标识获取文件的 Base64 数据。
     bool GetFileBase64(const std::string& file_id, std::string& base64);
 
+    // 标准 OneBot get_image：将图片文件名解析为下载地址或本地路径。
+    bool GetImage(const std::string& file, nlohmann::json& data);
+
     // 下载图片消息段提供的 HTTP(S) 地址，成功时返回二进制内容。
     bool DownloadUrl(const std::string& url, std::string& data);
 

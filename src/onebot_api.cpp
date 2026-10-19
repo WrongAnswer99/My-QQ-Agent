@@ -100,6 +100,23 @@ bool OneBotApi::GetFileBase64(const std::string& file_id, std::string& base64) {
     }
 }
 
+bool OneBotApi::GetImage(const std::string& file, json& data) {
+    std::string response;
+    if (file.empty() || !PostJson("get_image", json{{"file", file}}.dump(), response)) {
+        return false;
+    }
+    try {
+        const json parsed = json::parse(response);
+        if (!parsed.contains("data") || !parsed["data"].is_object()) {
+            return false;
+        }
+        data = parsed["data"];
+        return true;
+    } catch (const json::exception&) {
+        return false;
+    }
+}
+
 bool OneBotApi::DownloadUrl(const std::string& url, std::string& data) {
     if (url.empty()) {
         return false;

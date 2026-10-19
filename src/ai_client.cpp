@@ -1,5 +1,6 @@
 #include "ai_client.hpp"
 
+#include <algorithm>
 #include <ctime>
 #include <curl/curl.h>
 #include <filesystem>
@@ -75,11 +76,23 @@ bool Init(const Settings& settings, std::string& error) {
     }
 
     g_settings = settings;
+    // 支持 API 基础地址；在查询参数之前补全路径，避免重复追加。
+    const auto suffix_pos = g_settings.base_url.find_first_of("?#");
+    std::string endpoint = g_settings.base_url.substr(0, suffix_pos);
+    const std::string suffix = suffix_pos == std::string::npos ? "" : g_settings.base_url.substr(suffix_pos);
+    while (!endpoint.empty() && endpoint.back() == '/') endpoint.pop_back();
+    const std::string chat_path = "/chat/completions";
+    if (endpoint.size() < chat_path.size()
+        || endpoint.compare(endpoint.size() - chat_path.size(), chat_path.size(), chat_path) != 0) {
+        endpoint += chat_path;
+    }
+    g_settings.base_url = endpoint + suffix;
     std::call_once(g_init_flag, GlobalInitOnce);
     return true;
 }
 
 std::string Chat(const ChatRequest& request, std::string& error) {
+    error.clear();
     if (g_settings.api_key.empty()) {
         error = "AI 客户端未初始化，请先调用 ai::Init";
         return std::string();
@@ -87,7 +100,10 @@ std::string Chat(const ChatRequest& request, std::string& error) {
 
     // 构建 JSON 请求体
     json request_body;
-    request_body["model"] = g_settings.model;
+    const bool has_images = std::any_of(request.messages.begin(), request.messages.end(),
+        [](const Message& message) { return !message.images.empty(); });
+    request_body["model"] = has_images && !g_settings.vision_model.empty()
+        ? g_settings.vision_model : g_settings.model;
     request_body["messages"] = json::array();
     request_body["messages"].push_back({
         {"role", "system"},

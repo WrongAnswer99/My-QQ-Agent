@@ -3,6 +3,9 @@ build/
 *.o
 *.obj
 *.exe
+# Python 回归测试缓存
+__pycache__/
+*.pyc
 
 # ===== 运行数据 =====
 # NapCat 运行环境（含登录态、缓存、配置等隐私数据）
