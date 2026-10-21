@@ -26,6 +26,8 @@ struct GroupHistoryEntry {
     std::string text;
     std::vector<GroupHistoryImage> images;
     std::string message_id;
+    std::string local_id;
+    std::string processing_status = "历史上下文";
 };
 
 struct GroupHistorySnapshot {
@@ -51,19 +53,23 @@ public:
                                         const std::string& text,
                                         const std::vector<GroupHistoryImage>& images,
                                         bool mentions_bot,
-                                        const std::string& message_id = {});
+                                        const std::string& message_id = {},
+                                        const std::string& local_id = {},
+                                        const std::string& processing_status = "历史上下文");
+
+    void SetProcessingStatus(const std::string& group_id, const std::string& local_id,
+                             const std::string& status);
 
     bool Contains(const std::string& group_id, const std::string& message_id);
     std::int64_t SyncSince(const std::string& group_id, std::int64_t fallback);
     void MarkSynced(const std::string& group_id, std::int64_t timestamp);
 
-    // 记录机器人已成功发送到群里的回复；reply_to_mention 为 true 时，
-    // 同时加入“对 @ 的回复”历史。
+    // 所有成功回复均进入普通历史与机器人回复历史，不限于回复 @ 的消息。
     void RecordBotReply(const std::string& group_id,
                         std::int64_t timestamp,
                         const std::string& bot_sender,
                         const std::string& text,
-                        bool reply_to_mention);
+                        bool reply_to_mention, const std::string& message_id = {});
 
 private:
     struct PerGroupHistory {

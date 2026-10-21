@@ -18,6 +18,8 @@ json EntryToJson(const GroupHistoryEntry& entry) {
     json value = {
         {"sequence", entry.sequence},
         {"message_id", entry.message_id},
+        {"local_id", entry.local_id},
+        {"processing_status", entry.processing_status},
         {"time", entry.timestamp},
         {"sender", entry.sender},
         {"text", entry.text},
@@ -46,6 +48,12 @@ bool EntryFromJson(const json& value, GroupHistoryEntry& entry) {
         entry.sender = value.at("sender").get<std::string>();
         entry.text = value.at("text").get<std::string>();
         entry.message_id = value.value("message_id", "");
+        entry.local_id = value.value("local_id", "");
+        entry.processing_status = value.value("processing_status", "历史上下文");
+        // 队列在内存中，重启不重放上次未完成任务，避免重复发言。
+        if (entry.processing_status == "处理中" || entry.processing_status == "待处理") {
+            entry.processing_status = "处理已中断";
+        }
         entry.images.clear();
         if (value.contains("images") && value["images"].is_array()) {
             for (const json& image_value : value["images"]) {
@@ -194,7 +202,9 @@ GroupHistorySnapshot GroupHistoryStore::RecordIncoming(const std::string& group_
                                                         const std::string& text,
                                                         const std::vector<GroupHistoryImage>& images,
                                                         bool mentions_bot,
-                                                        const std::string& message_id) {
+                                                        const std::string& message_id,
+                                                        const std::string& local_id,
+                                                        const std::string& processing_status) {
     std::lock_guard<std::mutex> lock(mutex_);
     PerGroupHistory& history = groups_[group_id];
 
@@ -224,9 +234,12 @@ GroupHistorySnapshot GroupHistoryStore::RecordIncoming(const std::string& group_
         }
     }
     GroupHistoryEntry entry{
-        next_sequence_++, timestamp, sender, text, images, message_id
+        next_sequence_++, timestamp, sender, text, images, message_id, local_id, processing_status
     };
     PushAndTrim(history.messages, entry, message_limit_);
+    if (processing_status == "机器人已发送") {
+        PushAndTrim(history.replies, entry, interaction_limit_);
+    }
     if (mentions_bot) {
         PushAndTrim(history.mentions, std::move(entry), interaction_limit_);
     }
@@ -234,6 +247,20 @@ GroupHistorySnapshot GroupHistoryStore::RecordIncoming(const std::string& group_
         std::cerr << "[群聊历史保存失败] " << file_path_ << std::endl;
     }
     return snapshot;
+}
+
+void GroupHistoryStore::SetProcessingStatus(const std::string& group_id,
+                                           const std::string& local_id,
+                                           const std::string& status) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = groups_.find(group_id);
+    if (found == groups_.end()) return;
+    for (auto* entries : {&found->second.messages, &found->second.mentions}) {
+        for (auto& entry : *entries) {
+            if (!local_id.empty() && entry.local_id == local_id) entry.processing_status = status;
+        }
+    }
+    if (!SaveToFileLocked()) std::cerr << "[处理状态保存失败] " << file_path_ << std::endl;
 }
 
 bool GroupHistoryStore::Contains(const std::string& group_id, const std::string& message_id) {
@@ -274,14 +301,14 @@ void GroupHistoryStore::RecordBotReply(const std::string& group_id,
                                        std::int64_t timestamp,
                                        const std::string& bot_sender,
                                        const std::string& text,
-                                       bool reply_to_mention) {
+                                       bool /*reply_to_mention*/, const std::string& message_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     PerGroupHistory& history = groups_[group_id];
-    GroupHistoryEntry entry{next_sequence_++, timestamp, bot_sender, text, {}};
+    if (!message_id.empty() && history.seen.count(message_id)) return;
+    if (!message_id.empty()) history.seen[message_id] = timestamp;
+    GroupHistoryEntry entry{next_sequence_++, timestamp, bot_sender, text, {}, message_id, {}, "机器人已发送"};
     PushAndTrim(history.messages, entry, message_limit_);
-    if (reply_to_mention) {
-        PushAndTrim(history.replies, std::move(entry), interaction_limit_);
-    }
+    PushAndTrim(history.replies, std::move(entry), interaction_limit_);
     if (!SaveToFileLocked()) {
         std::cerr << "[群聊历史保存失败] " << file_path_ << std::endl;
     }

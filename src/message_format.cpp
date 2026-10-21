@@ -91,6 +91,21 @@ std::string CleanAIReply(const std::string& reply) {
     return reply.substr(separator + 2);
 }
 
+bool ExtractReplyReference(std::string& text,
+                           const std::unordered_map<std::string, std::string>& references,
+                           std::string& message_id) {
+    message_id.clear();
+    const auto start = text.find("[&");
+    if (start == std::string::npos) return true;
+    const auto end = text.find(']', start + 2);
+    if (end == std::string::npos || text.find("[&", end + 1) != std::string::npos) return false;
+    const auto found = references.find(text.substr(start + 2, end - start - 2));
+    if (found == references.end() || found->second.empty()) return false;
+    message_id = found->second;
+    text.erase(start, end - start + 1);
+    return true;
+}
+
 json BuildGroupReplySegments(const std::string& reply, const ImageResolver& resolve_image) {
     json segments = json::array();
     std::size_t text_start = 0;

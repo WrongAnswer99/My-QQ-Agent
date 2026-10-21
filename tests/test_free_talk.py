@@ -10,11 +10,11 @@ import time
 from http.server import ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
-from test_image_understanding import Stub, image, image_urls, segment
+from test_image_understanding import Stub, image, image_urls, segment, batch_reply, wait_group_done
 
 
 class TalkStub(Stub):
-    decision = '{"reply":false}'
+    decision = '{"reply_ids":[]}'
     fail_decision = False
     decisions = []
 
@@ -28,8 +28,11 @@ class TalkStub(Stub):
             if self.fail_decision:
                 return self.respond({"error": {"message": "decision unavailable"}})
             content = self.decision
+            if content == "select_all":
+                context = json.loads(data["messages"][-1]["content"])
+                content = json.dumps({"reply_ids": [item["id"] for item in context["pending_messages"]]})
         else:
-            content = "普通聊天回复"
+            content = batch_reply(data, "普通聊天回复")
         self.respond({"choices": [{"message": {"content": content}}]})
 
 
@@ -67,39 +70,49 @@ def run(executable, server_port, *, history_limit=100, private=True, master="88"
                         assert time.monotonic() < deadline, "启动超时"
                         time.sleep(0.05)
 
+                sequence = 0
+
                 def send(text="闲聊", *, group=7, user=1, extra=()):
+                    nonlocal sequence
+                    sequence += 1
                     event = {"post_type": "message", "message_type": "private" if group is None else "group",
                              "user_id": user, "group_id": group or 0,
-                             "message": [segment("text", text=text), *extra]}
+                             "message_id": sequence, "message": [segment("text", text=text), *extra]}
                     before = (len(TalkStub.requests), len(TalkStub.decisions), len(TalkStub.sent))
                     request = Request(f"http://127.0.0.1:{port}/", data=json.dumps(event).encode(),
                                       headers={"Content-Type": "application/json"})
                     with urlopen(request, timeout=10) as response:
                         response.read()
+                    if group is not None and user != 99:
+                        if history_limit:
+                            wait_group_done(root, sequence)
+                        else:
+                            time.sleep(0.2)
                     return tuple(after - prior for after, prior in zip(
                         (len(TalkStub.requests), len(TalkStub.decisions), len(TalkStub.sent)), before))
 
                 assert send(group=8) == (0, 0, 0), "普通群不调用判断"
                 assert send(group=8, extra=[segment("at", qq="99")]) == (1, 0, 1)
                 assert send("触发词", group=8) == (1, 0, 1)
-                TalkStub.decision = '{"reply":false}'
+                TalkStub.decision = '{"reply_ids":[]}'
                 assert send("别人的话题") == (1, 1, 0)
                 assert send(extra=[segment("at", qq="99")]) == (1, 0, 1), "@ 跳过判断"
                 assert send("触发词") == (1, 0, 1), "关键词跳过判断"
-                TalkStub.decision = '{"reply":true}'
+                TalkStub.decision = "select_all"
                 assert send("测试机器人，你觉得呢？") == (2, 1, 1)
                 decision = TalkStub.decisions[-1]
                 assert "判断是否叫测试机器人 [unknown]" in decision["messages"][0]["content"]
                 assert decision["temperature"] == 0 and decision["model"] == "text-test"
                 context = json.loads(decision["messages"][-1]["content"])
                 assert context["bot_profile"] == "你叫测试机器人" and context["bot_qq"] == "99"
-                assert context["current_message"] == "测试机器人，你觉得呢？"
+                assert context["pending_messages"][0]["content"] == "测试机器人，你觉得呢？"
                 assert bool(context["recent_messages"]) == bool(history_limit)
                 if history_limit:
                     assert any("普通聊天回复" in item for item in context["recent_messages"])
                     assert len(context["recent_messages"]) == 5, "普通历史与交互历史按序号去重，保留不同消息的相同文本"
-                for invalid in ('{"reply":false}', '{"reply":"true"}', 'true', '{}', '不是 JSON',
-                                '```json\n{"reply":true}\n```'):
+                for invalid in ('{"reply_ids":[]}', '{"reply_ids":"true"}', 'true', '{}', '不是 JSON',
+                                '{"reply_ids":["unknown"]}', '{"reply_ids":[1]}',
+                                '```json\n{"reply_ids":[]}\n```'):
                     TalkStub.decision = invalid
                     assert send() == (1, 1, 0), invalid
                 TalkStub.fail_decision = True
@@ -107,14 +120,14 @@ def run(executable, server_port, *, history_limit=100, private=True, master="88"
                     assert send() == (1, 1, 0), "判断失败不发送错误到群聊"
                 finally:
                     TalkStub.fail_decision = False
-                TalkStub.decision = '{"reply":true}'
+                TalkStub.decision = "select_all"
                 assert send(user=99) == (0, 0, 0), "忽略自身消息"
                 assert send("继续看图", extra=[image()]) == (2, 1, 1)
                 assert not image_urls(TalkStub.decisions[-1]), "判断只使用文本"
                 assert image_urls(TalkStub.requests[-1]), "正式回复仍读取图片"
                 assert send(extra=[segment("reply", id="123"), segment("at", qq="12345")]) == (2, 1, 1)
                 context = json.loads(TalkStub.decisions[-1]["messages"][-1]["content"])
-                assert "12345" in context["current_message"]
+                assert "12345" in context["pending_messages"][0]["content"]
                 assert send(group=None) == ((1, 0, 1) if private else (0, 0, 0))
                 if master:
                     assert send(group=None, user=88) == (0, 0, 0), "主人普通消息不走聊天"

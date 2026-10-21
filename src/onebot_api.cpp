@@ -43,7 +43,8 @@ bool OneBotApi::SendGroupMsg(const std::string& group_id, const std::string& mes
 }
 
 bool OneBotApi::SendGroupMsgSegments(const std::string& group_id,
-                                     const json& message_segments) {
+                                     const json& message_segments, std::string* sent_message_id) {
+    if (sent_message_id) sent_message_id->clear();
     if (!message_segments.is_array() || message_segments.empty()) {
         return false;
     }
@@ -52,7 +53,16 @@ bool OneBotApi::SendGroupMsgSegments(const std::string& group_id,
     body["message"] = message_segments;
 
     std::string response;
-    return PostJson("send_group_msg", body.dump(), response);
+    if (!PostJson("send_group_msg", body.dump(), response)) return false;
+    if (sent_message_id) {
+        const auto result = json::parse(response, nullptr, false);
+        if (result.is_object() && result.contains("data") && result["data"].is_object()) {
+            const auto id = result["data"].value("message_id", json{});
+            if (id.is_string()) *sent_message_id = id.get<std::string>();
+            else if (id.is_number_integer()) *sent_message_id = id.dump();
+        }
+    }
+    return true;
 }
 
 bool OneBotApi::GetMsg(const std::string& message_id, json& message) {

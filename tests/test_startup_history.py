@@ -10,7 +10,7 @@ import time
 from http.server import ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
-from test_image_understanding import Stub, PNG, image, segment
+from test_image_understanding import Stub, PNG, image, segment, wait_group_done
 
 
 class HistoryStub(Stub):
@@ -109,6 +109,7 @@ def run(executable, server_port):
             try:
                 assert HistoryStub.blocked.wait(10)
                 send(event(9000, int(time.time())))
+                wait_group_done(root, 9000)
                 assert len(Stub.sent) == 1, "同步期间实时消息仍应回复"
                 HistoryStub.release.set()
                 wait_for(lambda: saved()["groups"]["8"]["synced_until"] >= now)
@@ -155,6 +156,7 @@ def run(executable, server_port):
                 assert any(m.get("message_id") == "9999" and "读取失败" in m["text"]
                            for m in saved()["groups"]["8"]["messages"])
                 send(event(9001, int(time.time())))
+                wait_group_done(root, 9001)
                 assert len(Stub.sent) == 2, "历史接口失败不影响正常聊天"
             except Exception:
                 output.flush()

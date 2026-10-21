@@ -124,6 +124,49 @@ int main() {
             "重启未保留 ID 或同步进度");
     }
 
+    // 本地编号及处理状态在普通历史、@ 历史中一致，并跨重启保留。
+    {
+        GroupHistoryStore states(10, 10, file_path);
+        states.RecordIncoming("9", 1, "用户", "待处理", {}, true, "901", "session-1", "处理中");
+        states.SetProcessingStatus("9", "session-1", "已回复");
+        states.RecordIncoming("9", 2, "用户", "中断", {}, true, "902", "session-2", "处理中");
+        GroupHistoryStore restart(10, 10, file_path);
+        passed &= Check(restart.Load(error), "状态重载失败：" + error);
+        const auto state = restart.RecordIncoming("9", 3, "用户", "新消息", {}, false);
+        passed &= Check(state.messages.size() == 2 && state.messages[0].local_id == "session-1"
+            && state.messages[0].processing_status == "已回复"
+            && state.messages[1].processing_status == "处理已中断"
+            && state.mentions[0].processing_status == "已回复"
+            && state.mentions[1].processing_status == "处理已中断", "编号或处理状态恢复错误");
+    }
+
+    {
+        GroupHistoryStore own(10, 10, file_path);
+        own.RecordBotReply("10", 1, "机器人(QQ:99)", "自由聊天也留历史", false, "1001");
+        own.RecordIncoming("10", 1, "机器人(QQ:99)", "自由聊天也留历史", {}, false,
+            "1001", "echo", "机器人已发送");
+        own.RecordIncoming("10", 2, "机器人(QQ:99)", "外部发送回显", {}, false,
+            "1002", "echo-2", "机器人已发送");
+        const auto history = own.RecordIncoming("10", 3, "用户", "继续", {}, false);
+        passed &= Check(history.messages.size() == 2 && history.replies.size() == 2
+            && history.replies[0].message_id == "1001"
+            && history.replies[1].processing_status == "机器人已发送", "自身回复丢失或回显重复");
+    }
+    {
+        const std::unordered_map<std::string, std::string> refs{{"session-1", "123"}, {"missing", ""}};
+        std::string quote;
+        std::string plain = "普通聊天";
+        passed &= Check(ExtractReplyReference(plain, refs, quote) && quote.empty()
+            && plain == "普通聊天", "普通聊天不应强制引用");
+        std::string referenced = "[&session-1]回答之前的问题 [@123456789]";
+        passed &= Check(ExtractReplyReference(referenced, refs, quote) && quote == "123"
+            && referenced == "回答之前的问题 [@123456789]", "引用标记未正确消费");
+        for (std::string invalid : {"[&unknown]回答", "[&session-1", "[&session-1][&session-1]回答",
+                                    "[&missing]回答", "[&]回答"}) {
+            passed &= Check(!ExtractReplyReference(invalid, refs, quote), "不应接受非法引用：" + invalid);
+        }
+    }
+
     const std::string prefixed_reply =
         "[2026-09-15 16:57:25] 机器人(QQ:1000000001): 回复正文";
     passed &= Check(CleanAIReply(prefixed_reply) == "回复正文",

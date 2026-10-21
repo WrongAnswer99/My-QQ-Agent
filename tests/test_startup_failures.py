@@ -10,7 +10,7 @@ import time
 from http.server import ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
-from test_image_understanding import Stub, segment
+from test_image_understanding import Stub, segment, wait_group_done
 from test_startup_history import event, wait_for
 
 
@@ -35,8 +35,6 @@ class StartupFailureStub(Stub):
                                      "message": "not ready " + self.token})
             if n == 3:
                 return self.respond({"status": "ok", "data": {}})
-            if n == 4:
-                return self.respond("not a OneBot object")
             return self.respond({"status": "ok", "data": [{"group_id": 7}]})
         type(self).history_calls += 1
         if "message_seq" not in data:
@@ -71,11 +69,11 @@ def run(executable):
             with log_path.open("wb") as output:
                 process = subprocess.Popen([str(executable)], cwd=root, stdout=output, stderr=subprocess.STDOUT)
                 try:
-                    wait_for(lambda: StartupFailureStub.history_calls >= 3, timeout=25)
+                    wait_for(lambda: StartupFailureStub.history_calls >= 3, timeout=30)
                     wait_for(lambda: "补取未完成" in log_path.read_text(encoding="utf-8"))
                     log = log_path.read_text(encoding="utf-8")
                     for expected in ("HTTP 401", "retcode=1200", "[REDACTED]", "data 应为数组",
-                                     "不是有效的 OneBot JSON", "消息不存在", "3 秒后重试"):
+                                     "消息不存在", "5 秒后重试", "3/3"):
                         assert expected in log, expected
                     assert StartupFailureStub.token not in log, "日志不得泄露令牌"
                     saved = json.loads((root / "userdata/group_history.json").read_text(encoding="utf-8"))
@@ -88,6 +86,7 @@ def run(executable):
                                       headers={"Content-Type": "application/json"})
                     with urlopen(request, timeout=10) as response:
                         response.read()
+                    wait_group_done(root, 1000)
                     background = Stub.requests[-1]["messages"][1]["content"]
                     assert all(f"触发词 {i}[@99]" in background for i in range(1, 23)), "模型必须收到 22 条历史"
                     assert len(Stub.sent) == 1

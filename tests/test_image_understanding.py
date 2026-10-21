@@ -33,6 +33,36 @@ def image_urls(request):
             for part in message["content"] if part["type"] == "image_url"]
 
 
+def request_text(request):
+    content = request["messages"][-1]["content"]
+    return content[0]["text"] if isinstance(content, list) else content
+
+
+def batch_reply(request, text):
+    if "【群聊批量回复协议】" not in request["messages"][0]["content"]:
+        return text
+    context = json.loads(request_text(request))
+    return json.dumps({"replies": [{"target_id": target, "text": text}
+                                    for target in context["reply_targets"]], "skipped_ids": []}, ensure_ascii=False)
+
+
+def wait_group_done(root, mid, timeout=15):
+    """HTTP 现在仅确认入队；测试等待本条历史成为终态后再断言。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            saved = json.loads((root / "userdata/group_history.json").read_text(encoding="utf-8"))
+            for group in saved["groups"].values():
+                for entry in group["messages"]:
+                    if entry.get("message_id") == str(mid) and entry.get("processing_status") not in (
+                            None, "处理中", "待处理"):
+                        return entry
+        except (OSError, ValueError, KeyError):
+            pass
+        time.sleep(0.02)
+    raise AssertionError(f"群消息 {mid} 处理超时")
+
+
 class Stub(BaseHTTPRequestHandler):
     requests = []
     sent = []
@@ -76,6 +106,8 @@ class Stub(BaseHTTPRequestHandler):
                     quoted = text.split("【用户当前消息】")[0]
                     marker = re.search(r"\[image\d+\]", quoted)
                     content = marker.group() if marker else "未提供引用图编号"
+                if not describing:
+                    content = batch_reply(data, content)
                 self.respond({"choices": [{"message": {"content": content}}]})
         elif self.path in ("/send_private_msg", "/send_group_msg"):
             self.sent.append(data)
@@ -129,14 +161,26 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                             raise AssertionError("机器人启动超时")
                         time.sleep(0.05)
 
+                sequence = 0
+
                 def send(parts, group=False, user=1, group_id=7):
+                    nonlocal sequence
+                    sequence += 1
                     event = {"post_type": "message", "message_type": "group" if group else "private",
-                             "user_id": user, "group_id": group_id, "message": parts}
+                             "user_id": user, "group_id": group_id, "message": parts,
+                             "message_id": sequence}
                     request = Request(f"http://127.0.0.1:{port}/", method="POST",
                                       data=json.dumps(event).encode(),
                                       headers={"Content-Type": "application/json"})
                     with urlopen(request, timeout=10) as response:
                         response.read()
+                    if group and user != 99 and (any(p["type"] == "text" for p in parts)
+                                                or (enabled and any(p["type"] == "image" for p in parts))):
+                        if history_limit:
+                            wait_group_done(root, sequence)
+                        else:
+                            # 无历史配额时无法轮询持久化状态，等待本地快速桩完成。
+                            time.sleep(0.2)
 
                 start = len(Stub.requests)
                 text = segment("text", text="请看图")
@@ -238,7 +282,8 @@ def run_session(executable, server_port, *, enabled=True, history=False, vision=
                     current = Stub.requests[-1]["messages"][-1]["content"]
                     urls = [part["image_url"]["url"] for part in current if part["type"] == "image_url"]
                     assert urls == [QUOTED_URL, DATA_URL], "引用图和当前图顺序或内容错误"
-                    quoted, own = current[0]["text"].split("【用户当前消息】")
+                    body = json.loads(current[0]["text"])["messages"][0]["content"]
+                    quoted, own = body.split("【用户当前消息】")
                     quoted_marker = re.findall(r"\[image\d+\]", quoted)
                     own_marker = re.findall(r"\[image\d+\]", own)
                     assert len(quoted_marker) == len(own_marker) == 1
